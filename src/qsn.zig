@@ -285,8 +285,11 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
         // * "\\u{000000}"
         // * raw UTF-8
         const Pending = LinearFifo(u8, .{ .Static = 16 });
+        // This keeps track of any remaining bytes of an invalid UTF-8 sequence.
+        const Reread = LinearFifo(u8, .{ .Static = 3 });
 
         pending: Pending,
+        reread: Reread,
 
         state: enum {
             Start,
@@ -298,7 +301,7 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
         const Self = @This();
 
         pub fn init() Self {
-            return Self{ .pending = Pending.init() };
+            return Self{ .pending = Pending.init(), .reread = Reread.init() };
         }
 
         fn formatHex(value: u8, writer: anytype) !void {
@@ -320,7 +323,9 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
             } = .{};
 
             while (true) {
-                const ch = if (self.state == .Inner or self.state == .Unicode and curr_unicode.len > curr_unicode.index)
+                const ch = if (self.reread.count != 0)
+                    self.reread.readItem().?
+                else if (self.state == .Inner or self.state == .Unicode and curr_unicode.len > curr_unicode.index)
                     reader.readByte() catch |err| switch (err) {
                         error.EndOfStream => {
                             self.state = .End;
@@ -390,11 +395,10 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                         } else {
                             // The maximum amount of unicode bytes has been reached.
                             const decoded = std.unicode.utf8Decode(curr_unicode.buffer[0..curr_unicode.len]) catch {
-                                // Fall back to hex-escaping the bytes if decoding UTF-8 did not succeed.
-                                // TODO: Re-read these bytes (except the first one)
-                                for (curr_unicode.buffer[0..curr_unicode.len]) |unicode_ch| {
-                                    try Self.formatHex(unicode_ch, self.pending.writer());
-                                    return self.pending.readItem().?;
+                                try Self.formatHex(curr_unicode.buffer[0], self.pending.writer());
+                                if (curr_unicode.len > 1) {
+                                    // The remaining bytes should be reread to not dismiss any potential ASCII/Unicode characters.
+                                    _ = try self.reread.writer().write(curr_unicode.buffer[1..curr_unicode.len]);
                                 }
                                 self.state = .Inner;
                                 return self.pending.readItem().?;
@@ -513,6 +517,24 @@ test "encode large unicode escapes (upper)" {
     try testing.expect(try encodeEqual(
         "goblin \u{1f47a}",
         "'goblin \\u{1f47a}'",
+        .lower,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode unicode nonsense (lower)" {
+    try testing.expect(try encodeEqual(
+        "goblin \xf0\xff\xff\xfe",
+        "'goblin \\xf0\\xff\\xff\\xfe'",
+        .lower,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode unicode nonsense with valid ascii (lower)" {
+    try testing.expect(try encodeEqual(
+        "goblin \xf0abc",
+        "'goblin \\xf0abc'",
         .lower,
         .{ .mode = .Unicode, .padding = 2 },
     ));
