@@ -1,10 +1,12 @@
 const std = @import("std");
 const LinearFifo = std.fifo.LinearFifo;
+const Case = std.fmt.Case;
 const testing = std.testing;
 
 // https://www.oilshell.org/release/latest/doc/qsn.html
 
 const Decoder = struct {
+    // This stores at most one UTF-8-encoded character which will be returned in the future.
     const Pending = LinearFifo(u8, .{ .Static = 4 });
 
     pending: Pending,
@@ -193,9 +195,9 @@ const Decoder = struct {
 
 fn decodeEqual(comptime in: []const u8, out: []const u8) !bool {
     const reader = std.io.fixedBufferStream(in).reader();
-    var p = Decoder.init();
+    var d = Decoder.init();
     var i: usize = 0;
-    while (try p.next(reader)) |c| : (i += 1) {
+    while (try d.next(reader)) |c| : (i += 1) {
         if (i >= out.len or out[i] != c) {
             return false;
         }
@@ -247,7 +249,7 @@ test "decode large unicode escapes" {
 
 test "decode multiple hex escapes" {
     try testing.expect(try decodeEqual(
-        "'goblin \\xf0\\x9f\\x91\\xBA'",
+        "'goblin \\xf0\\x9f\\x91\\xba'",
         "goblin \u{1f47a}",
     ));
 }
@@ -259,16 +261,37 @@ test "decode quote escapes" {
     ));
 }
 
-// Incomplete.
-pub fn Encoder() type {
+pub const UnicodeMode = enum {
+    Unicode,
+    Hex,
+    Raw,
+};
+
+pub const UnicodeOptions = struct {
+    mode: UnicodeMode = .Raw,
+    padding: usize = 2,
+};
+
+pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
+    if (unicode_options.padding < 2 or unicode_options.padding > 6) {
+        @compileError("unicode escapes must use a padding amount between 2 and 6");
+    }
+
     return struct {
-        const Pending = LinearFifo(u8, .{ .Static = 9 });
+        // This stores QSN-encoded versions of byte sequences which will be returned in the future.
+        // It will be able to store the following values:
+        // * "\\x00" for simple bytes
+        // * "\\x00" ** the length of the UTF-8 sequence (<= 16 bytes)
+        // * "\\u{000000}"
+        // * raw UTF-8
+        const Pending = LinearFifo(u8, .{ .Static = 16 });
 
         pending: Pending,
 
         state: enum {
             Start,
             Inner,
+            Unicode,
             End,
         } = .Start,
 
@@ -278,29 +301,120 @@ pub fn Encoder() type {
             return Self{ .pending = Pending.init() };
         }
 
-        pub fn next(self: *Self, reader: anytype) !?u8 {
+        fn formatHex(value: u8, writer: anytype) !void {
+            _ = try writer.write("\\x");
+            try std.fmt.formatInt(value, 16, case, .{ .width = 2, .fill = '0' }, writer);
+        }
+
+        fn formatUnicode(value: u21, writer: anytype) !void {
+            _ = try writer.write("\\u{");
+            try std.fmt.formatInt(value, 16, case, .{ .width = unicode_options.padding, .fill = '0' }, writer);
+            _ = try writer.write("}");
+        }
+
+        fn readNext(self: *Self, reader: anytype) !?u8 {
+            var curr_unicode: struct {
+                buffer: [4]u8 = undefined,
+                index: usize = 0,
+                len: usize = 0,
+            } = .{};
+
             while (true) {
+                const ch = if (self.state == .Inner or self.state == .Unicode and curr_unicode.len > curr_unicode.index)
+                    reader.readByte() catch |err| switch (err) {
+                        error.EndOfStream => {
+                            self.state = .End;
+                            return '\'';
+                        },
+                        else => {
+                            return err;
+                        },
+                    }
+                else
+                    null;
+
                 switch (self.state) {
                     .Start => {
                         self.state = .Inner;
                         return '\'';
                     },
                     .Inner => {
-                        const ch = reader.readByte() catch |err| switch (err) {
-                            error.EndOfStream => {
-                                self.state = .End;
-                                return '\'';
-                            },
-                            else => {
-                                return err;
-                            },
-                        };
+                        if (std.ascii.isASCII(ch.?)) {
+                            if (!std.ascii.isGraph(ch.?) and !std.ascii.isSpace(ch.?)) {
+                                // Not visually representable in ASCII.
+                                try Self.formatHex(ch.?, self.pending.writer());
+                                return self.pending.readItem().?;
+                            } else {
+                                const suffix: ?u8 = switch (ch.?) {
+                                    '\n' => 'n',
+                                    '\r' => 'r',
+                                    '\t' => 't',
+                                    '\\' => '\\',
+                                    '\x00' => '0',
+                                    '\'' => '\'',
+                                    '"' => '"',
+                                    else => null,
+                                };
 
-                        if (std.ascii.isASCII(ch)) {
-                            return ch;
+                                if (suffix == null) {
+                                    // An ASCII character.
+                                    return ch.?;
+                                } else {
+                                    // An ASCII escape.
+                                    const writer = self.pending.writer();
+                                    try writer.writeByte('\\');
+                                    try writer.writeByte(suffix.?);
+                                    return self.pending.readItem().?;
+                                }
+                            }
+                        } else if (unicode_options.mode == .Unicode) {
+                            curr_unicode.len = std.unicode.utf8ByteSequenceLength(ch.?) catch {
+                                // A raw byte, not unicode or ASCII.
+                                try Self.formatHex(ch.?, self.pending.writer());
+                                return self.pending.readItem().?;
+                            };
+
+                            curr_unicode.buffer[curr_unicode.index] = ch.?;
+                            curr_unicode.index += 1;
+                            self.state = .Unicode;
+                            continue;
                         } else {
-                            // TODO: Options to specify whether unicode should be escaped
-                            return ch;
+                            try Self.formatHex(ch.?, self.pending.writer());
+                            return self.pending.readItem().?;
+                        }
+                    },
+                    .Unicode => {
+                        if (curr_unicode.len > curr_unicode.index) {
+                            curr_unicode.buffer[curr_unicode.index] = ch.?;
+                            curr_unicode.index += 1;
+                        } else {
+                            // The maximum amount of unicode bytes has been reached.
+                            const decoded = std.unicode.utf8Decode(curr_unicode.buffer[0..curr_unicode.len]) catch {
+                                // Fall back to hex-escaping the bytes if decoding UTF-8 did not succeed.
+                                // TODO: Re-read these bytes (except the first one)
+                                for (curr_unicode.buffer[0..curr_unicode.len]) |unicode_ch| {
+                                    try Self.formatHex(unicode_ch, self.pending.writer());
+                                    return self.pending.readItem().?;
+                                }
+                                self.state = .Inner;
+                                return self.pending.readItem().?;
+                            };
+
+                            switch (unicode_options.mode) {
+                                .Hex => {
+                                    for (curr_unicode.buffer) |unicode_ch| {
+                                        try Self.formatHex(unicode_ch, self.pending.writer());
+                                    }
+                                },
+                                .Unicode => {
+                                    try Self.formatUnicode(decoded, self.pending.writer());
+                                },
+                                .Raw => {
+                                    try self.pending.writer().write(curr_unicode.buffer[0..]);
+                                },
+                            }
+                            self.state = .Inner;
+                            return self.pending.readItem().?;
                         }
                     },
                     .End => {
@@ -309,14 +423,22 @@ pub fn Encoder() type {
                 }
             }
         }
+
+        pub fn next(self: *Self, reader: anytype) !?u8 {
+            if (self.pending.count != 0) {
+                return self.pending.readItem().?;
+            }
+
+            return try self.readNext(reader);
+        }
     };
 }
 
-fn encodeEqual(comptime in: []const u8, out: []const u8) !bool {
+fn encodeEqual(comptime in: []const u8, out: []const u8, comptime case: Case, comptime unicode_options: UnicodeOptions) !bool {
     const reader = std.io.fixedBufferStream(in).reader();
-    var s = Encoder().init();
+    var e = Encoder(case, unicode_options).init();
     var i: usize = 0;
-    while (try s.next(reader)) |c| : (i += 1) {
+    while (try e.next(reader)) |c| : (i += 1) {
         if (i >= out.len or out[i] != c) {
             return false;
         }
@@ -326,7 +448,99 @@ fn encodeEqual(comptime in: []const u8, out: []const u8) !bool {
 
 test "encode simple string" {
     try testing.expect(try encodeEqual(
-        "test",
-        "'test'",
+        "my favorite song.mp3",
+        "'my favorite song.mp3'",
+        .lower,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode simple escapes" {
+    try testing.expect(try encodeEqual(
+        "bob\t1.0\ncarol\t2.0\n",
+        "'bob\\t1.0\\ncarol\\t2.0\\n'",
+        .lower,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode hex escapes (lower)" {
+    try testing.expect(try encodeEqual(
+        "Hello World\x7f",
+        "'Hello World\\x7f'",
+        .lower,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode hex escapes (upper)" {
+    try testing.expect(try encodeEqual(
+        "Hello World\x7F",
+        "'Hello World\\x7F'",
+        .upper,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode unicode escapes (lower)" {
+    try testing.expect(try encodeEqual(
+        "Hello W\u{f6}rld",
+        "'Hello W\\u{f6}rld'",
+        .lower,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode unicode escapes (upper)" {
+    try testing.expect(try encodeEqual(
+        "Hello W\u{F6}rld",
+        "'Hello W\\u{F6}rld'",
+        .upper,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode large unicode escapes (lower)" {
+    try testing.expect(try encodeEqual(
+        "goblin \u{1f47a}",
+        "'goblin \\u{1f47a}'",
+        .lower,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode large unicode escapes (upper)" {
+    try testing.expect(try encodeEqual(
+        "goblin \u{1f47a}",
+        "'goblin \\u{1f47a}'",
+        .lower,
+        .{ .mode = .Unicode, .padding = 2 },
+    ));
+}
+
+test "encode multiple hex escapes (lower)" {
+    try testing.expect(try encodeEqual(
+        "goblin \xf0\x9f\x91\xba",
+        "'goblin \\xf0\\x9f\\x91\\xba'",
+        .lower,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode multiple hex escapes (upper)" {
+    try testing.expect(try encodeEqual(
+        "goblin \xF0\x9F\x91\xBA",
+        "'goblin \\xF0\\x9F\\x91\\xBA'",
+        .upper,
+        .{ .mode = .Hex, .padding = 2 },
+    ));
+}
+
+test "encode quote escapes" {
+    try testing.expect(try encodeEqual(
+        "it's 6AM",
+        "'it\\'s 6AM'",
+        .lower,
+        .{ .mode = .Hex, .padding = 2 },
     ));
 }
