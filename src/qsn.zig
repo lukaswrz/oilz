@@ -219,35 +219,35 @@ test "decode simple escapes" {
     ));
 }
 
-test "decode hex escapes" {
+test "decode hexadecimal escapes" {
     try testing.expect(try decodeEqual(
         "'Hello W\\x6frld'",
         "Hello World",
     ));
 }
 
-test "decode unicode escapes" {
+test "decode Unicode escapes" {
     try testing.expect(try decodeEqual(
         "'Hello W\\u{6f}rld'",
         "Hello World",
     ));
 }
 
-test "decode unicode escapes with leading zeroes" {
+test "decode Unicode escapes with leading zeros" {
     try testing.expect(try decodeEqual(
         "'Hello W\\u{006f}rld'",
         "Hello World",
     ));
 }
 
-test "decode large unicode escapes" {
+test "decode large Unicode escapes" {
     try testing.expect(try decodeEqual(
         "'goblin \\u{1f47a}'",
         "goblin \u{1f47a}",
     ));
 }
 
-test "decode multiple hex escapes" {
+test "decode multiple hexadecimal escapes" {
     try testing.expect(try decodeEqual(
         "'goblin \\xf0\\x9f\\x91\\xba'",
         "goblin \u{1f47a}",
@@ -468,7 +468,7 @@ test "encode simple escapes" {
     ));
 }
 
-test "encode hex escapes (lower)" {
+test "encode lowercase hexadecimal escapes" {
     try testing.expect(try encodeEqual(
         "Hello World\x7f",
         "'Hello World\\x7f'",
@@ -477,7 +477,7 @@ test "encode hex escapes (lower)" {
     ));
 }
 
-test "encode hex escapes (upper)" {
+test "encode uppercase hexadecimal escapes" {
     try testing.expect(try encodeEqual(
         "Hello World\x7F",
         "'Hello World\\x7F'",
@@ -486,7 +486,7 @@ test "encode hex escapes (upper)" {
     ));
 }
 
-test "encode unicode escapes (lower)" {
+test "encode lowercase Unicode escapes" {
     try testing.expect(try encodeEqual(
         "Hello W\u{f6}rld",
         "'Hello W\\u{f6}rld'",
@@ -495,7 +495,7 @@ test "encode unicode escapes (lower)" {
     ));
 }
 
-test "encode unicode escapes (upper)" {
+test "encode uppercase Unicode escapes" {
     try testing.expect(try encodeEqual(
         "Hello W\u{F6}rld",
         "'Hello W\\u{F6}rld'",
@@ -504,7 +504,7 @@ test "encode unicode escapes (upper)" {
     ));
 }
 
-test "encode large unicode escapes (lower)" {
+test "encode large Unicode escapes" {
     try testing.expect(try encodeEqual(
         "goblin \u{1f47a}",
         "'goblin \\u{1f47a}'",
@@ -513,16 +513,7 @@ test "encode large unicode escapes (lower)" {
     ));
 }
 
-test "encode large unicode escapes (upper)" {
-    try testing.expect(try encodeEqual(
-        "goblin \u{1f47a}",
-        "'goblin \\u{1f47a}'",
-        .lower,
-        .{ .mode = .unicode, .padding = 2 },
-    ));
-}
-
-test "encode unicode nonsense (lower)" {
+test "encode Unicode nonsense" {
     try testing.expect(try encodeEqual(
         "goblin \xf0\xff\xff\xfe",
         "'goblin \\xf0\\xff\\xff\\xfe'",
@@ -531,7 +522,7 @@ test "encode unicode nonsense (lower)" {
     ));
 }
 
-test "encode unicode nonsense with valid ascii (lower)" {
+test "encode Unicode nonsense with valid ASCII" {
     try testing.expect(try encodeEqual(
         "goblin \xf0abc",
         "'goblin \\xf0abc'",
@@ -540,20 +531,11 @@ test "encode unicode nonsense with valid ascii (lower)" {
     ));
 }
 
-test "encode multiple hex escapes (lower)" {
+test "encode multiple hexadecimal escapes" {
     try testing.expect(try encodeEqual(
         "goblin \xf0\x9f\x91\xba",
         "'goblin \\xf0\\x9f\\x91\\xba'",
         .lower,
-        .{ .mode = .hex, .padding = 2 },
-    ));
-}
-
-test "encode multiple hex escapes (upper)" {
-    try testing.expect(try encodeEqual(
-        "goblin \xF0\x9F\x91\xBA",
-        "'goblin \\xF0\\x9F\\x91\\xBA'",
-        .upper,
         .{ .mode = .hex, .padding = 2 },
     ));
 }
