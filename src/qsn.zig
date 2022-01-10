@@ -12,13 +12,13 @@ const Decoder = struct {
     pending: Pending,
 
     state: enum {
-        Start,
-        Inner,
-        Escape,
-        Unicode,
-        UnicodeDigits,
-        Hex,
-    } = .Start,
+        start,
+        inner,
+        escape,
+        unicode,
+        unicode_digits,
+        hex,
+    } = .start,
 
     pub const Error = error{
         UnexpectedEndOfStream,
@@ -41,11 +41,11 @@ const Decoder = struct {
         var offset: usize = 0;
         // Hexadecimal escapes accept exactly 2 digits.
         var hex_buffer: u8 = 0;
-        // QSN unicode codepoints accept at most 6 hexadecimal digits (24 bits).
+        // QSN Unicode codepoints accept at most 6 hexadecimal digits (24 bits).
         var unicode_buffer: u24 = 0;
 
         while (true) {
-            const ch = reader.readByte() catch |err| switch (err) {
+            const c = reader.readByte() catch |err| switch (err) {
                 error.EndOfStream => {
                     return Error.UnexpectedEndOfStream;
                 },
@@ -55,59 +55,59 @@ const Decoder = struct {
             };
 
             switch (self.state) {
-                .Start => switch (ch) {
+                .start => switch (c) {
                     '\'' => {
-                        self.state = .Inner;
+                        self.state = .inner;
                     },
                     else => {
                         return Error.StartConditionFailed;
                     },
                 },
-                .Inner => switch (ch) {
+                .inner => switch (c) {
                     '\\' => {
-                        self.state = .Escape;
+                        self.state = .escape;
                     },
                     '\'' => {
                         return null;
                     },
                     else => {
-                        return ch;
+                        return c;
                     },
                 },
-                .Escape => {
-                    switch (ch) {
+                .escape => {
+                    switch (c) {
                         'x' => {
-                            self.state = .Hex;
+                            self.state = .hex;
                         },
                         'u' => {
-                            self.state = .Unicode;
+                            self.state = .unicode;
                         },
                         'n' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\n';
                         },
                         'r' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\r';
                         },
                         't' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\t';
                         },
                         '\\' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\\';
                         },
                         '0' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\x00';
                         },
                         '\'' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '\'';
                         },
                         '"' => {
-                            self.state = .Inner;
+                            self.state = .inner;
                             return '"';
                         },
                         else => {
@@ -115,21 +115,21 @@ const Decoder = struct {
                         },
                     }
                 },
-                .Unicode => {
-                    switch (ch) {
+                .unicode => {
+                    switch (c) {
                         '{' => {
-                            self.state = .UnicodeDigits;
+                            self.state = .unicode_digits;
                         },
                         else => {
                             return Error.UnicodeStartConditionError;
                         },
                     }
                 },
-                .UnicodeDigits => {
-                    switch (ch) {
+                .unicode_digits => {
+                    switch (c) {
                         '0'...'9', 'a'...'f', 'A'...'F' => {
                             unicode_buffer <<= 4;
-                            unicode_buffer |= try std.fmt.parseInt(u4, &[_]u8{ch}, 16);
+                            unicode_buffer |= try std.fmt.parseInt(u4, &[_]u8{c}, 16);
                             offset += 1;
                             if (offset > 5) {
                                 return Error.CodepointTooLong;
@@ -149,7 +149,7 @@ const Decoder = struct {
                                 try self.pending.writeItem(elem);
                             }
 
-                            self.state = .Inner;
+                            self.state = .inner;
                             offset = 0;
                             unicode_buffer = 0;
                             return self.pending.readItem().?;
@@ -159,15 +159,15 @@ const Decoder = struct {
                         },
                     }
                 },
-                .Hex => {
-                    switch (ch) {
+                .hex => {
+                    switch (c) {
                         '0'...'9', 'a'...'f', 'A'...'F' => {
                             hex_buffer <<= 4;
-                            hex_buffer |= try std.fmt.parseInt(u4, &[_]u8{ch}, 16);
+                            hex_buffer |= try std.fmt.parseInt(u4, &[_]u8{c}, 16);
                             offset += 1;
 
                             if (offset == 2) {
-                                self.state = .Inner;
+                                self.state = .inner;
                                 offset = 0;
                                 return hex_buffer;
                             }
@@ -195,9 +195,9 @@ const Decoder = struct {
 
 fn decodeEqual(comptime in: []const u8, out: []const u8) !bool {
     const reader = std.io.fixedBufferStream(in).reader();
-    var d = Decoder.init();
+    var decoder = Decoder.init();
     var i: usize = 0;
-    while (try d.next(reader)) |c| : (i += 1) {
+    while (try decoder.next(reader)) |c| : (i += 1) {
         if (i >= out.len or out[i] != c) {
             return false;
         }
@@ -262,13 +262,13 @@ test "decode quote escapes" {
 }
 
 pub const UnicodeMode = enum {
-    Unicode,
-    Hex,
-    Raw,
+    unicode,
+    hex,
+    raw,
 };
 
 pub const UnicodeOptions = struct {
-    mode: UnicodeMode = .Raw,
+    mode: UnicodeMode = .raw,
     padding: usize = 2,
 };
 
@@ -292,11 +292,11 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
         reread: Reread,
 
         state: enum {
-            Start,
-            Inner,
-            Unicode,
-            End,
-        } = .Start,
+            start,
+            inner,
+            unicode,
+            end,
+        } = .start,
 
         const Self = @This();
 
@@ -323,12 +323,12 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
             } = .{};
 
             while (true) {
-                const ch = if (self.reread.count != 0)
+                const c = if (self.reread.count != 0)
                     self.reread.readItem().?
-                else if (self.state == .Inner or self.state == .Unicode and curr_unicode.len > curr_unicode.index)
+                else if (self.state == .inner or self.state == .unicode and curr_unicode.len > curr_unicode.index)
                     reader.readByte() catch |err| switch (err) {
                         error.EndOfStream => {
-                            self.state = .End;
+                            self.state = .end;
                             return '\'';
                         },
                         else => {
@@ -339,18 +339,18 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                     null;
 
                 switch (self.state) {
-                    .Start => {
-                        self.state = .Inner;
+                    .start => {
+                        self.state = .inner;
                         return '\'';
                     },
-                    .Inner => {
-                        if (std.ascii.isASCII(ch.?)) {
-                            if (!std.ascii.isGraph(ch.?) and !std.ascii.isSpace(ch.?)) {
+                    .inner => {
+                        if (std.ascii.isASCII(c.?)) {
+                            if (!std.ascii.isGraph(c.?) and !std.ascii.isSpace(c.?)) {
                                 // Not visually representable in ASCII.
-                                try Self.formatHex(ch.?, self.pending.writer());
+                                try Self.formatHex(c.?, self.pending.writer());
                                 return self.pending.readItem().?;
                             } else {
-                                const suffix: ?u8 = switch (ch.?) {
+                                const suffix: ?u8 = switch (c.?) {
                                     '\n' => 'n',
                                     '\r' => 'r',
                                     '\t' => 't',
@@ -363,7 +363,7 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
 
                                 if (suffix == null) {
                                     // An ASCII character.
-                                    return ch.?;
+                                    return c.?;
                                 } else {
                                     // An ASCII escape.
                                     const writer = self.pending.writer();
@@ -372,25 +372,25 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                                     return self.pending.readItem().?;
                                 }
                             }
-                        } else if (unicode_options.mode == .Unicode) {
-                            curr_unicode.len = std.unicode.utf8ByteSequenceLength(ch.?) catch {
+                        } else if (unicode_options.mode == .unicode) {
+                            curr_unicode.len = std.unicode.utf8ByteSequenceLength(c.?) catch {
                                 // A raw byte, not unicode or ASCII.
-                                try Self.formatHex(ch.?, self.pending.writer());
+                                try Self.formatHex(c.?, self.pending.writer());
                                 return self.pending.readItem().?;
                             };
 
-                            curr_unicode.buffer[curr_unicode.index] = ch.?;
+                            curr_unicode.buffer[curr_unicode.index] = c.?;
                             curr_unicode.index += 1;
-                            self.state = .Unicode;
+                            self.state = .unicode;
                             continue;
                         } else {
-                            try Self.formatHex(ch.?, self.pending.writer());
+                            try Self.formatHex(c.?, self.pending.writer());
                             return self.pending.readItem().?;
                         }
                     },
-                    .Unicode => {
+                    .unicode => {
                         if (curr_unicode.len > curr_unicode.index) {
-                            curr_unicode.buffer[curr_unicode.index] = ch.?;
+                            curr_unicode.buffer[curr_unicode.index] = c.?;
                             curr_unicode.index += 1;
                         } else {
                             // The maximum amount of unicode bytes has been reached.
@@ -400,28 +400,28 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                                     // The remaining bytes should be reread to not dismiss any potential ASCII/Unicode characters.
                                     _ = try self.reread.writer().write(curr_unicode.buffer[1..curr_unicode.len]);
                                 }
-                                self.state = .Inner;
+                                self.state = .inner;
                                 return self.pending.readItem().?;
                             };
 
                             switch (unicode_options.mode) {
-                                .Hex => {
-                                    for (curr_unicode.buffer) |unicode_ch| {
-                                        try Self.formatHex(unicode_ch, self.pending.writer());
+                                .hex => {
+                                    for (curr_unicode.buffer) |uc| {
+                                        try Self.formatHex(uc, self.pending.writer());
                                     }
                                 },
-                                .Unicode => {
+                                .unicode => {
                                     try Self.formatUnicode(decoded, self.pending.writer());
                                 },
-                                .Raw => {
+                                .raw => {
                                     try self.pending.writer().write(curr_unicode.buffer[0..]);
                                 },
                             }
-                            self.state = .Inner;
+                            self.state = .inner;
                             return self.pending.readItem().?;
                         }
                     },
-                    .End => {
+                    .end => {
                         return null;
                     },
                 }
@@ -440,9 +440,9 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
 
 fn encodeEqual(comptime in: []const u8, out: []const u8, comptime case: Case, comptime unicode_options: UnicodeOptions) !bool {
     const reader = std.io.fixedBufferStream(in).reader();
-    var e = Encoder(case, unicode_options).init();
+    var encoder = Encoder(case, unicode_options).init();
     var i: usize = 0;
-    while (try e.next(reader)) |c| : (i += 1) {
+    while (try encoder.next(reader)) |c| : (i += 1) {
         if (i >= out.len or out[i] != c) {
             return false;
         }
@@ -455,7 +455,7 @@ test "encode simple string" {
         "my favorite song.mp3",
         "'my favorite song.mp3'",
         .lower,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -464,7 +464,7 @@ test "encode simple escapes" {
         "bob\t1.0\ncarol\t2.0\n",
         "'bob\\t1.0\\ncarol\\t2.0\\n'",
         .lower,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -473,7 +473,7 @@ test "encode hex escapes (lower)" {
         "Hello World\x7f",
         "'Hello World\\x7f'",
         .lower,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -482,7 +482,7 @@ test "encode hex escapes (upper)" {
         "Hello World\x7F",
         "'Hello World\\x7F'",
         .upper,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -491,7 +491,7 @@ test "encode unicode escapes (lower)" {
         "Hello W\u{f6}rld",
         "'Hello W\\u{f6}rld'",
         .lower,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -500,7 +500,7 @@ test "encode unicode escapes (upper)" {
         "Hello W\u{F6}rld",
         "'Hello W\\u{F6}rld'",
         .upper,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -509,7 +509,7 @@ test "encode large unicode escapes (lower)" {
         "goblin \u{1f47a}",
         "'goblin \\u{1f47a}'",
         .lower,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -518,7 +518,7 @@ test "encode large unicode escapes (upper)" {
         "goblin \u{1f47a}",
         "'goblin \\u{1f47a}'",
         .lower,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -527,7 +527,7 @@ test "encode unicode nonsense (lower)" {
         "goblin \xf0\xff\xff\xfe",
         "'goblin \\xf0\\xff\\xff\\xfe'",
         .lower,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -536,7 +536,7 @@ test "encode unicode nonsense with valid ascii (lower)" {
         "goblin \xf0abc",
         "'goblin \\xf0abc'",
         .lower,
-        .{ .mode = .Unicode, .padding = 2 },
+        .{ .mode = .unicode, .padding = 2 },
     ));
 }
 
@@ -545,7 +545,7 @@ test "encode multiple hex escapes (lower)" {
         "goblin \xf0\x9f\x91\xba",
         "'goblin \\xf0\\x9f\\x91\\xba'",
         .lower,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -554,7 +554,7 @@ test "encode multiple hex escapes (upper)" {
         "goblin \xF0\x9F\x91\xBA",
         "'goblin \\xF0\\x9F\\x91\\xBA'",
         .upper,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
 
@@ -563,6 +563,6 @@ test "encode quote escapes" {
         "it's 6AM",
         "'it\\'s 6AM'",
         .lower,
-        .{ .mode = .Hex, .padding = 2 },
+        .{ .mode = .hex, .padding = 2 },
     ));
 }
