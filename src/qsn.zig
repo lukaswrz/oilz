@@ -372,7 +372,7 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                                     return self.pending.readItem().?;
                                 }
                             }
-                        } else if (unicode_options.mode == .unicode) {
+                        } else if (unicode_options.mode == .unicode or unicode_options.mode == .raw) {
                             curr_unicode.len = std.unicode.utf8ByteSequenceLength(c.?) catch {
                                 // A raw byte, not unicode or ASCII.
                                 try Self.formatHex(c.?, self.pending.writer());
@@ -414,7 +414,7 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                                     try Self.formatUnicode(decoded, self.pending.writer());
                                 },
                                 .raw => {
-                                    try self.pending.writer().write(curr_unicode.buffer[0..]);
+                                    _ = try self.pending.writer().write(curr_unicode.buffer[0..]);
                                 },
                             }
                             self.state = .inner;
@@ -501,6 +501,15 @@ test "encode uppercase Unicode escapes" {
         "'Hello W\\u{F6}rld'",
         .upper,
         .{ .mode = .unicode, .padding = 2 },
+    ));
+}
+
+test "encode raw UTF-8" {
+    try testing.expect(try encodeEqual(
+        "goblin \u{1f47a}",
+        "'goblin \u{1f47a}'",
+        .lower,
+        .{ .mode = .raw, .padding = 2 },
     ));
 }
 
