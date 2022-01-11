@@ -37,7 +37,11 @@ const Decoder = struct {
         return Self{ .pending = Pending.init() };
     }
 
-    fn readNext(self: *Self, reader: anytype) !?u8 {
+    pub fn next(self: *Self, reader: anytype) !?u8 {
+        if (self.pending.count != 0) {
+            return self.pending.readItem().?;
+        }
+
         var offset: usize = 0;
         // Hexadecimal escapes accept exactly 2 digits.
         var hex_buffer: u8 = 0;
@@ -183,14 +187,6 @@ const Decoder = struct {
             }
         }
     }
-
-    pub fn next(self: *Self, reader: anytype) !?u8 {
-        if (self.pending.count != 0) {
-            return self.pending.readItem().?;
-        }
-
-        return try self.readNext(reader);
-    }
 };
 
 fn decodeEqual(comptime in: []const u8, out: []const u8) !bool {
@@ -315,7 +311,11 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
             _ = try writer.write("}");
         }
 
-        fn readNext(self: *Self, reader: anytype) !?u8 {
+        pub fn next(self: *Self, reader: anytype) !?u8 {
+            if (self.pending.count != 0) {
+                return self.pending.readItem().?;
+            }
+
             var curr_unicode: struct {
                 buffer: [4]u8 = undefined,
                 index: usize = 0,
@@ -426,14 +426,6 @@ pub fn Encoder(case: Case, unicode_options: UnicodeOptions) type {
                     },
                 }
             }
-        }
-
-        pub fn next(self: *Self, reader: anytype) !?u8 {
-            if (self.pending.count != 0) {
-                return self.pending.readItem().?;
-            }
-
-            return try self.readNext(reader);
         }
     };
 }
