@@ -2,7 +2,7 @@ const Builder = @import("std").build.Builder;
 
 pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
-    const lib = b.addStaticLibrary("oilzio", "src/qsn.zig");
+    const lib = b.addStaticLibrary("oilz", "src/qsn.zig");
     lib.setBuildMode(mode);
     lib.install();
 
